@@ -5,7 +5,7 @@ Con
 
   ' Settings
   BUFFER_LENGTH = 255           ' Input Buffer Length must fit within input/output 'Index' ranges (currently a byte)
-  VERSION       = 12
+  VERSION       = 112           ' Added 100 for this modified version (Tang) 
 
   ' Positions one wheel must make for a 360° rotation
   POSITIONS_PER_ROTATION = 186
@@ -43,6 +43,8 @@ Con
   ' Ping))) sensors
   PING_0        = 0
   PING_1        = 1
+  PING_2        = 2
+  PING_3        = 3
   ' Encoders
   ENCODERS_PIN  = 10
   ' Solid-state Relays
@@ -71,7 +73,7 @@ Con
   OUTPUTABLE    = %00000000_00000111_11111111_11111111
   PINGABLE      = %00000000_00000000_11111111_11111111
   INITIAL_GPIO  = |< SSR_A | |< SSR_B | |< SSR_C
-  INITIAL_PING  = |< PING_0 | |< PING_1
+  INITIAL_PING  = |< PING_0 | |< PING_1 | |< PING_2 | |< PING_3
 
   ' Terminal Settings
   BAUDMODE      = %0000
@@ -124,6 +126,11 @@ Con
   DEADZONE      = 1
   PROMPT_SUM    = $0
 
+  ' Tang  
+  ' Kinect pan servo parameters
+  Pin_ServoPan  = 4
+  Pan_FullLeft  = 600
+
            
 Obj                             
                                 
@@ -132,6 +139,7 @@ Obj
   ADC           : "MCP3208.spin"                        ' Works with MCP3008, but two LSBs may be incorrect
   Ping          : "ReadPulseWidths.spin"
   Motors        : "Eddie Motor Driver"
+  Servos        : "PWM_32_v4"                           ' Added for Kinect Pan servo (Tang)
 
 
 Var
@@ -177,7 +185,12 @@ Pub Main
   Term.Start(RX, TX, BAUDMODE, BAUDRATE)                ' Start a UART for the command port
   ADC.Start(ADC_DIO, ADC_CLK, ADC_CS, $FF)              ' Continuously run ADC conversions
   Ping.Start(@PingResults)                              ' Continuously read pulse widths on PING))) pins 
-  cognew(PDLoop, @Stack)                                ' Run the position controller in another core  
+  cognew(PDLoop, @Stack)                                ' Run the position controller in another core
+
+  ' Tang  
+  ' Initialize PWM for Kinect pan servo
+  Servos.Start
+  SetPanPosition(90)
 
   repeat                                                ' Main loop (repeats forever)
     InputBuffer[InputIndex++] := Term.Rx                ' Read a byte from the command UART 
@@ -223,6 +236,25 @@ Pub Main
 
         SOH..BEL, LF..FF, SO..US, 127..255 :            ' Ignore invalid characters
 
+
+PRI SetPanPosition(Horz) | width, units
+{{
+  Tang  
+  Sets the servo position of the Kinect.
+  Pos - 1 to 180 degrees
+}}
+  width := (Horz * 10) + Pan_FullLeft
+  Servos.Servo(Pin_ServoPan, width)
+
+PRI SetServoPosition(Pin,Horz) | width, units
+{{
+  Tang  
+  Sets the servo position.
+  Pos - 1 to 180 degrees
+}}
+  width := (Horz * 10) + Pan_FullLeft
+  Servos.Servo(Pin, width)     
+    
 
 Pri Parse | Index, Difference, Parameter[3]             '' Parse the command in the input buffer
   
@@ -447,6 +479,18 @@ Pri Parse | Index, Difference, Parameter[3]             '' Parse the command in 
           Verbose := Parameter
         other:
           abort @InvalidParameter
+
+    elseif strcomp(@InputBuffer, string("KPOS"))          ' Command: Set Kinect Pan servo (Tang)
+      Parameter := ParseHex(NextParameter)
+      CheckLastParameter
+      SetPanPosition(Parameter)
+      
+    elseif strcomp(@InputBuffer, string("SV"))         ' Command: Set Servos (Tang) 
+      Parameter[0] := ParseHex(NextParameter)             ' I/O Pin
+      Parameter[1] := ParseHex(NextParameter)             ' Parameter 1 - 180
+      CheckLastParameter
+      SetServoPosition(Parameter[0], Parameter[1]) 
+
     else
       abort @InvalidCommand
 
@@ -533,7 +577,7 @@ Pri PDIteration(Side) | Difference[2], ToSignExtend, Limit, RawPosition
   Encoders.Tx(constant(QUERY_SPEED << 3) | Side + 1)    ' Request motor speed
   ifnot !Encoders.RxTime(TIMEOUT)                       ' Ignore high byte and abort on error
     PDRunning~
-    Motors.Stop
+    'Motors.Stop
     cogstop(cogid)
   ToSignExtend := Encoders.RxTime(TIMEOUT)
   MotorSpeed[Side] := ~ToSignExtend * (2 - Side << 2)   ' Multiply by two and reverse sign for right motor
